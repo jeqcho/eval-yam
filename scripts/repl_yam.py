@@ -288,12 +288,8 @@ def main() -> None:
     if rerun_requested:
         # AUTO-SAVE: if --rerun was passed but no --rerun-save path was
         # specified, default to writing the .rrd to eval-yam/logs/rrd/.
-        # Cost: ~50-200 MB per session (depends on duration + image size).
-        # Benefit: every session leaves a full per-tick replay on disk
-        # that can be re-opened in Rerun later or read programmatically
-        # via `rerun.dataframe.load_recording(path).view(...)` for
-        # offline analysis (joint trajectories, action/state divergence,
-        # etc). Without this, joint histories die with the viewer.
+        # Cost: ~300-900 MB per active minute. Without this, joint
+        # histories die with the viewer when the REPL exits.
         if args.rerun and not args.rerun_save:
             from datetime import datetime as _dt
             rrd_dir = os.path.join(os.path.dirname(_HERE), "logs", "rrd")
@@ -306,12 +302,28 @@ def main() -> None:
         try:
             import rerun as rr
             yc._rr = rr
-            rr.init(f"yam_repl_{args.policy}", spawn=(args.rerun_connect is None))
+            rr.init(f"yam_repl_{args.policy}")
+            # MULTI-SINK setup. In Rerun 0.32, calling rr.save() after
+            # rr.init(spawn=True) REPLACES the viewer's gRPC sink with
+            # a file sink -- the live viewer goes dark while data is
+            # written to disk. The correct way to have BOTH is rr.set_sinks
+            # with explicit GrpcSink + FileSink. Note that set_sinks
+            # "replaces existing sinks" so we must NOT use spawn=True
+            # in rr.init; we call rr.spawn() to launch the viewer process
+            # without connecting, then set_sinks wires everything.
+            sinks = []
             if args.rerun_connect:
                 host, _, port = args.rerun_connect.partition(":")
-                rr.connect_grpc(f"rerun+http://{host}:{port}/proxy")
+                sinks.append(rr.GrpcSink(url=f"rerun+http://{host}:{port}/proxy"))
+            else:
+                # Spawn the viewer process; connect=False so we don't
+                # bind a sink that set_sinks would then override and
+                # leave dangling.
+                rr.spawn(connect=False)
+                sinks.append(rr.GrpcSink())  # connects to default localhost:9876
             if args.rerun_save:
-                rr.save(args.rerun_save)
+                sinks.append(rr.FileSink(args.rerun_save))
+            rr.set_sinks(*sinks)
         except ImportError:
             log.error("--rerun requested but rerun-sdk not installed.")
             sys.exit(2)
