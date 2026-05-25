@@ -165,15 +165,22 @@ class MolmoActHTTPBackend(Backend):
 #   obs["language"]["annotation.human.task_description"]  [[str]]  (1, 1)
 #
 # Response schema (16-step action chunk per key):
-#   actions["left_arm"]      (1, 16, 6)   RELATIVE deltas from current state
-#   actions["left_gripper"]  (1, 16, 1)   ABSOLUTE [0, 1]
-#   actions["right_arm"]     (1, 16, 6)   RELATIVE deltas
-#   actions["right_gripper"] (1, 16, 1)   ABSOLUTE [0, 1]
+#   actions["left_arm"]      (1, 16, 6)   ABSOLUTE joint targets (rad)
+#   actions["left_gripper"]  (1, 16, 1)   ABSOLUTE gripper [0, 1]
+#   actions["right_arm"]     (1, 16, 6)   ABSOLUTE
+#   actions["right_gripper"] (1, 16, 1)   ABSOLUTE
 #
-# We CONVERT the relative arm deltas to absolute joint positions by adding
-# the current state -- the downstream client (yam_repl.run_one_attempt)
-# treats `actions` as absolute and clips each step against the live state
-# via safe_command, which already handles "make these absolute targets".
+# IMPORTANT: although the *training-time* action_config says rep=RELATIVE
+# for the arms, the SERVER decodes relative->absolute before returning the
+# chunk. Gr00tPolicy.predict_action calls processor.decode_action which
+# calls StateActionProcessor.unapply_action(..., state=current_state),
+# and that's where the addition happens. By the time the wire payload
+# arrives at the client, the arm values are already absolute joint
+# targets in the same space as the YAM state.
+#
+# Earlier versions of this backend ADDED current state on top, which
+# resulted in 2x commanded motion -- arms swung dangerously fast. Do
+# NOT add state here.
 
 class Gr00tZmqBackend(Backend):
     name = "gr00t-n17"
@@ -310,16 +317,16 @@ class Gr00tZmqBackend(Backend):
                     f"gr00t: action horizon mismatch: left_arm T={T}, {name} T={arr.shape[0]}"
                 )
 
-        # Convert relative arm deltas to absolute by adding the SINGLE current
-        # state captured at /act time. We deliberately do not re-read state
-        # here; the downstream client treats `actions` as absolute and applies
-        # safe_command against the *live* state at each tick, which is the
-        # right semantics for both async and sync inference.
+        # Stitch the 4 per-modality streams into a (T, 14) chunk. ALL FOUR
+        # streams are absolute -- the server already converted relative arm
+        # deltas to absolute via StateActionProcessor.unapply_action. Do NOT
+        # add the current state here; doing so was a real bug that doubled
+        # all commanded arm motion and made gr00t feel "too fast / dangerous".
         actions = np.zeros((T, STATE_DIM), dtype=np.float32)
-        actions[:, LEFT_ARM]   = la + s[LEFT_ARM][None, :]   # relative -> absolute
-        actions[:, LEFT_GRIP]  = lg.reshape(-1)              # absolute
-        actions[:, RIGHT_ARM]  = ra + s[RIGHT_ARM][None, :]  # relative -> absolute
-        actions[:, RIGHT_GRIP] = rg.reshape(-1)              # absolute
+        actions[:, LEFT_ARM]   = la                # absolute joint targets
+        actions[:, LEFT_GRIP]  = lg.reshape(-1)    # absolute gripper
+        actions[:, RIGHT_ARM]  = ra                # absolute joint targets
+        actions[:, RIGHT_GRIP] = rg.reshape(-1)    # absolute gripper
         return actions, rtt_ms
 
 
