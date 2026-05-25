@@ -95,12 +95,20 @@ def register() -> None:
             # joint-flip / gripper-radian conversion that
             # AlohaInputs/Outputs apply for the actual Aloha rig.
             adapt_to_pi=False,
-            # use_delta_joint_actions: TRAINING-TIME flag that controls
-            # whether the model learns deltas vs absolute. The
-            # un-normalize step on serving is symmetric either way,
-            # and norm_stats q01/q99 indicate absolute joint targets
-            # on the wire. Set to match the training fork.
-            use_delta_joint_actions=True,
+            # use_delta_joint_actions: MUST match the training fork's
+            # setting. If they differ, the openpi server's AbsoluteActions
+            # output_transform either double-adds state (config=True but
+            # trained=False -> 2x commanded motion, dangerously fast) or
+            # never converts (config=False but trained=True -> tiny
+            # near-zero deltas, arm barely moves).
+            #
+            # Started at True (agilex default). Symptom-based diagnosis
+            # against the running checkpoint pointed at the double-add
+            # pathology: pi-0.5's a[0] sat ~0.8 rad off a sensible state
+            # while molmoact2's a[0] sat ~0.05 rad off the same state,
+            # and arm motion felt "like gr00t pre-fix". Flipped to False
+            # to match what appears to be the actual training-fork setting.
+            use_delta_joint_actions=False,
         ),
     )
 
