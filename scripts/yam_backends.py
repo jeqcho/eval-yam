@@ -343,35 +343,54 @@ class Gr00tZmqBackend(Backend):
 # Codec is openpi's vendored msgpack-numpy: ndarrays serialize as
 # {__ndarray__, data:bytes, dtype, shape}.
 #
-# Observation schema (Aloha-style -- yam_pi05 config most likely inherits
-# this from pi05_aloha; if jeqcho's fork uses a custom YamInputs transform
-# with different image key names, override via obs_key_* ctor kwargs):
+# Observation schema -- the AGILEX fork's openpi differs from upstream:
+#
+#   * Upstream openpi's AlohaInputs accepts cam_high/cam_left_wrist/
+#     cam_right_wrist and remaps to canonical base_0_rgb/left_wrist_0_rgb/
+#     right_wrist_0_rgb internally.
+#   * Agilex's AlohaInputs is a passthrough -- expects images ALREADY in
+#     canonical form, zero-fills any canonical key not present (see
+#     openpi-agilex/src/openpi/policies/aloha_policy.py: STANDARD_IMAGE_KEYS).
+#   * create_trained_policy(repack_transforms=None) defaults to an empty
+#     Group AT INFERENCE -- the config's repack mapping (which would
+#     translate cam_* -> base_0_rgb in the agilex AlohaInputs world) is
+#     NEVER applied at serve time. It only matters during training.
+#
+# Consequence: clients must send canonical keys directly. Sending
+# cam_high gets the image silently dropped into an "extra" bucket the
+# model doesn't read, while base_0_rgb stays zero-filled -- the model
+# runs BLIND. (Diagnosed by user reporting "pi-0.5 doesn't pick up the
+# cube" -- safe motion but no visual grounding.)
 #
 #   "state"  (14,) float32  [left_q(6), left_grip(1), right_q(6), right_grip(1)]
 #   "images" {
-#     "cam_high":        (3, H, W) uint8 RGB   <-- top
-#     "cam_left_wrist":  (3, H, W) uint8 RGB
-#     "cam_right_wrist": (3, H, W) uint8 RGB
+#     "base_0_rgb":        (3, H, W) uint8 RGB   <-- top
+#     "left_wrist_0_rgb":  (3, H, W) uint8 RGB
+#     "right_wrist_0_rgb": (3, H, W) uint8 RGB
 #   }
 #   "prompt" str
 #
-# IMPORTANT: CHW, not HWC. AlohaInputs server-side expects channels-first.
-# We transpose here so the rest of the codebase stays HWC-everywhere.
+# IMPORTANT: CHW, not HWC. We transpose here so the rest of the codebase
+# stays HWC-everywhere.
 #
 # Response:
-#   {"actions": (16, 14) float32 ABSOLUTE joint targets, "server_timing": {...}}
-# Layout matches our 14-D state vector directly -- no decoding needed.
+#   {"actions": (50, 32) float32; sliced to (50, 14) client-side. ABSOLUTE
+#    joint targets after the AbsoluteActions output_transform (or directly
+#    absolute if use_delta_joint_actions=False matches the training).}
+# Layout: [left_q(6), left_grip(1), right_q(6), right_grip(1)] then 18 pad dims.
 
 class Pi05WebsocketBackend(Backend):
     name = "pi05"
 
-    # Aloha-style keys. Override via ctor if jeqcho's yam_pi05 uses a
-    # custom YamInputs transform with different names.
+    # Canonical openpi image keys. Despite the "aloha" branding, these
+    # are the model-internal names every openpi-pi0/pi05 policy reads --
+    # the model was trained on these exact strings. Do NOT change without
+    # also looking at the agilex AlohaInputs.STANDARD_IMAGE_KEYS list.
     OBS_KEY_STATE = "state"
     OBS_KEY_IMAGES = "images"
-    IMG_KEY_TOP = "cam_high"
-    IMG_KEY_LEFT = "cam_left_wrist"
-    IMG_KEY_RIGHT = "cam_right_wrist"
+    IMG_KEY_TOP = "base_0_rgb"
+    IMG_KEY_LEFT = "left_wrist_0_rgb"
+    IMG_KEY_RIGHT = "right_wrist_0_rgb"
     OBS_KEY_PROMPT = "prompt"
 
     def __init__(self, host: str = "127.0.0.1", port: int = 8000,
