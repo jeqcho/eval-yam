@@ -79,12 +79,15 @@ import sys
 sys.path.insert(0, '$HERE')
 import register_yam_pi05  # side-effect: appends yam_pi05 to _CONFIGS
 import runpy
+# tyro CLI structure: top-level flags (--port, --env, ...) precede the
+# subcommand 'policy:checkpoint', then subcommand-scoped flags follow.
+# Mixing them produces \`Unrecognized options\` errors.
 sys.argv = [
     'serve_policy.py',
+    '--port', '$PORT',
     'policy:checkpoint',
-    '--policy.config=yam_pi05',
-    '--policy.dir=$CKPT_DIR',
-    '--port=$PORT',
+    '--policy.config', 'yam_pi05',
+    '--policy.dir', '$CKPT_DIR',
 ] + sys.argv[1:]
 runpy.run_path('scripts/serve_policy.py', run_name='__main__')
 " "$@"

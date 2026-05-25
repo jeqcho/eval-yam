@@ -52,53 +52,61 @@ from __future__ import annotations
 # script doesn't require openpi to be importable yet.
 
 def register() -> None:
-    """Append the ``yam_pi05`` TrainConfig to openpi's _CONFIGS list."""
+    """Append the ``yam_pi05`` TrainConfig to openpi's _CONFIGS list AND
+    _CONFIGS_DICT (the latter is built ONCE at module-import time --
+    appending only to the list is not enough, get_config() looks the dict).
+    """
     from openpi.models import pi0_config
     from openpi.policies import aloha_policy  # noqa: F401  -- transforms imported via cfg
+    from openpi.training import config as _cfg_mod
     from openpi.training.config import (
-        _CONFIGS,
         AssetsConfig,
         LeRobotAlohaDataConfig,
         TrainConfig,
     )
 
     # Bail out if already registered (re-imports are safe).
-    if any(c.name == "yam_pi05" for c in _CONFIGS):
+    if "yam_pi05" in _cfg_mod._CONFIGS_DICT:
         return
 
-    _CONFIGS.append(
-        TrainConfig(
-            name="yam_pi05",
-            model=pi0_config.Pi0Config(
-                pi05=True,
-                action_horizon=16,
-                action_dim=14,
+    # Pi0Config defaults are action_dim=32, action_horizon=50 (the MODEL's
+    # internal padded dimensions, not the data's). All agilex pi05_*
+    # configs use bare Pi0Config(pi05=True) and rely on the input/output
+    # transforms to map between the data's real action shape (here: 14-D
+    # over a 16-step horizon, per the HF model card) and the model's
+    # internal (50, 32). Overriding action_dim/horizon here causes a
+    # checkpoint shape mismatch -- this was the original bug.
+    cfg = TrainConfig(
+        name="yam_pi05",
+        model=pi0_config.Pi0Config(pi05=True),
+        data=LeRobotAlohaDataConfig(
+            # The LeRobot dataset repo used in training. Confirmed from
+            # the checkpoint's `assets/<asset_id>/norm_stats.json`.
+            repo_id="jeqcho/yam-bimanual-merged-v2-train",
+            assets=AssetsConfig(
+                # When set to None, the assets bundled inside the
+                # checkpoint dir's ``assets/`` subtree are used. This
+                # matches what serve_policy.py expects when loading
+                # by --policy.dir.
+                assets_dir=None,
+                asset_id="jeqcho/yam-bimanual-merged-v2-train",
             ),
-            data=LeRobotAlohaDataConfig(
-                # The LeRobot dataset repo used in training. Confirmed from
-                # the checkpoint's `assets/<asset_id>/norm_stats.json`.
-                repo_id="jeqcho/yam-bimanual-merged-v2-train",
-                assets=AssetsConfig(
-                    # When set to None, the assets bundled inside the
-                    # checkpoint dir's ``assets/`` subtree are used. This
-                    # matches what serve_policy.py expects when loading
-                    # by --policy.dir.
-                    assets_dir=None,
-                    asset_id="jeqcho/yam-bimanual-merged-v2-train",
-                ),
-                # YAM is NOT Trossen Aloha hardware -- disable the
-                # joint-flip / gripper-radian conversion that
-                # AlohaInputs/Outputs apply for the actual Aloha rig.
-                adapt_to_pi=False,
-                # use_delta_joint_actions: TRAINING-TIME flag that controls
-                # whether the model learns deltas vs absolute. The
-                # un-normalize step on serving is symmetric either way,
-                # and norm_stats q01/q99 indicate absolute joint targets
-                # on the wire. Set to match the training fork.
-                use_delta_joint_actions=True,
-            ),
-        )
+            # YAM is NOT Trossen Aloha hardware -- disable the
+            # joint-flip / gripper-radian conversion that
+            # AlohaInputs/Outputs apply for the actual Aloha rig.
+            adapt_to_pi=False,
+            # use_delta_joint_actions: TRAINING-TIME flag that controls
+            # whether the model learns deltas vs absolute. The
+            # un-normalize step on serving is symmetric either way,
+            # and norm_stats q01/q99 indicate absolute joint targets
+            # on the wire. Set to match the training fork.
+            use_delta_joint_actions=True,
+        ),
     )
+
+    # Both list and dict must be updated -- get_config() reads the dict.
+    _cfg_mod._CONFIGS.append(cfg)
+    _cfg_mod._CONFIGS_DICT[cfg.name] = cfg
 
 
 # Side-effect on import so `python -c "import register_yam_pi05"` works as

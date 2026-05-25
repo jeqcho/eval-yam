@@ -470,6 +470,19 @@ class Pi05WebsocketBackend(Backend):
         actions = np.asarray(out["actions"], dtype=np.float32)
         if actions.ndim == 3 and actions.shape[0] == 1:
             actions = actions[0]
+
+        # PI-0.5 servers return the MODEL's padded internal shape, not the
+        # real-data shape. With Pi0Config defaults that's (50, 32). The
+        # first 14 dims correspond to the real YAM actions; cols 14..31
+        # are model padding from training (always 0 after un-normalize).
+        #
+        # The agilex AlohaOutputs only slices to [:, :14] when
+        # `adapt_to_pi=True`, which would ALSO apply trossen-aloha joint
+        # flips that are wrong for YAM. So we register yam_pi05 with
+        # adapt_to_pi=False and do the dim-slice here client-side.
+        # See servers/pi05/register_yam_pi05.py for the symmetric choice.
+        if actions.ndim == 2 and actions.shape[1] > STATE_DIM:
+            actions = actions[:, :STATE_DIM]
         if actions.ndim != 2 or actions.shape[1] != STATE_DIM:
             raise RuntimeError(
                 f"pi05: expected actions (N, {STATE_DIM}), got shape {actions.shape}"
